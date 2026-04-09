@@ -1,0 +1,7 @@
+<svg width="220" height="56" viewBox="0 0 220 56" xmlns="http://www.w3.org/2000/svg" fill="none">
+  <rect x="1" y="1" width="54" height="54" rx="14" stroke="#4A3E22"/>
+  <path d="M18 35V21h8.4c4.8 0 7.6 2.4 7.6 6.7S31.2 35 26.4 35H18Zm5.1-4.1h3c1.8 0 2.8-1.2 2.8-3.2 0-2.1-1-3.3-2.8-3.3h-3v6.5Z" fill="#C9A84C"/>
+  <path d="M74 22h58" stroke="#2C281F"/>
+  <path d="M74 34h58" stroke="#2C281F"/>
+  <text x="142" y="37" fill="#F2EFE7" font-family="IBM Plex Sans, sans-serif" font-size="24" font-weight="600">CLUTCH</text>
+</svg>

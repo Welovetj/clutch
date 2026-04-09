@@ -1,0 +1,37 @@
+import { redirect } from "next/navigation";
+import { DataSourceNotice } from "@/components/dashboard/data-source-notice";
+import { OverviewClient } from "@/components/dashboard/overview-client";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { getDashboardData } from "@/lib/supabase/queries";
+
+export default async function DashboardOverviewPage() {
+  const supabase = await createSupabaseServerClient();
+
+  if (!supabase) {
+    redirect("/login");
+  }
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/login");
+  }
+
+  const data = await getDashboardData(supabase, user.id);
+
+  return (
+    <>
+      <DataSourceNotice source={data.source} />
+      <OverviewClient
+        bets={data.bets}
+        bankrollCurve={data.bankrollCurve}
+        exposure={data.exposure}
+        analytics={data.analytics}
+        watchlistTeams={data.watchlistTeams}
+        tiltEvents={data.tiltEvents}
+      />
+    </>
+  );
+}
