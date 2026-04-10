@@ -105,11 +105,17 @@ create table if not exists public.ai_chat_messages (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   role text not null check (role in ('user', 'assistant')),
-  mode text not null default 'default' check (mode in ('default', 'prediction')),
+  mode text not null default 'default' check (mode in ('auto', 'default', 'prediction', 'bankroll', 'recap', 'watchlist')),
   content text not null,
   prediction jsonb,
+  workflow jsonb,
   created_at timestamptz not null default now()
 );
+
+alter table if exists public.ai_chat_messages drop constraint if exists ai_chat_messages_mode_check;
+alter table if exists public.ai_chat_messages
+  add constraint ai_chat_messages_mode_check check (mode in ('auto', 'default', 'prediction', 'bankroll', 'recap', 'watchlist'));
+alter table if exists public.ai_chat_messages add column if not exists workflow jsonb;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (

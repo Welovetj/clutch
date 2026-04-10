@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { toSupabaseErrorMessage } from "@/lib/supabase/errors";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -105,7 +106,7 @@ export default function ResetPasswordPage() {
       router.replace("/login?reset=success");
       router.refresh();
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : "Unable to reset password");
+      setError(toSupabaseErrorMessage(caughtError, "Unable to reset password"));
     } finally {
       setPending(false);
     }
@@ -133,7 +134,7 @@ export default function ResetPasswordPage() {
 
       setResendMessage("If an account exists for that email, a fresh reset link has been sent.");
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : "Unable to resend reset link");
+      setError(toSupabaseErrorMessage(caughtError, "Unable to resend reset link"));
     } finally {
       setResendPending(false);
     }
@@ -148,7 +149,7 @@ export default function ResetPasswordPage() {
         <p className="mt-2 text-sm text-[color:var(--on-surface-variant)]">Use the link from your email to open this page, then choose a new password.</p>
 
         {canReset ? (
-          <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+          <form key="reset-password-form" className="mt-6 space-y-4" onSubmit={handleSubmit}>
             <label className="block space-y-1.5">
               <span className="text-xs text-[color:var(--on-surface-variant)]">New Password</span>
               <input
@@ -176,7 +177,7 @@ export default function ResetPasswordPage() {
             </button>
           </form>
         ) : (
-          <form className="mt-6 space-y-4" onSubmit={handleResend}>
+          <form key="resend-reset-link-form" className="mt-6 space-y-4" onSubmit={handleResend}>
             <p className="text-xs text-[color:var(--on-surface-variant)]">This page needs a valid recovery link from email. Enter your email to resend a fresh link.</p>
             <label className="block space-y-1.5">
               <span className="text-xs text-[color:var(--on-surface-variant)]">Recovery Email</span>

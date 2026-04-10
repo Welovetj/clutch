@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Bot, MessageSquareText, SendHorizontal, Sparkles, Target, Trash2, X } from "lucide-react";
+import { ASSISTANT_AGENTS, getAssistantAgent, normalizeAssistantMode, type AssistantMode, type AssistantWorkflow } from "@/lib/ai/agents";
 
 type AssistantMessage = {
   id?: string;
   role: "user" | "assistant";
-  mode?: "default" | "prediction";
+  mode?: AssistantMode;
   content: string;
   prediction?: {
     title: string;
@@ -17,20 +18,14 @@ type AssistantMessage = {
     recommendedStakePct: number;
     timeHorizon: string;
   } | null;
+  workflow?: AssistantWorkflow | null;
 };
-
-const quickPrompts = [
-  "Summarize my recent bets into short notes.",
-  "What patterns do you see in my ROI by segment?",
-  "Give 3 risk-control insights from my bankroll and open exposure.",
-  "What should I focus on this week based on my betting history?",
-];
 
 export function AssistantPanel() {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [predictionMode, setPredictionMode] = useState(false);
+  const [activeAgent, setActiveAgent] = useState<AssistantMode>("default");
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
 
@@ -42,9 +37,10 @@ export function AssistantPanel() {
           data?: Array<{
             id?: string;
             role?: "user" | "assistant";
-            mode?: "default" | "prediction";
+            mode?: AssistantMode;
             content?: string;
             prediction?: AssistantMessage["prediction"];
+            workflow?: AssistantWorkflow | null;
           }>;
         };
 
@@ -61,9 +57,10 @@ export function AssistantPanel() {
             .map((item) => ({
               id: item.id,
               role: item.role!,
-              mode: item.mode,
+              mode: normalizeAssistantMode(item.mode),
               content: item.content!,
               prediction: item.prediction ?? null,
+              workflow: item.workflow ?? null,
             })),
         );
       } catch {
@@ -75,8 +72,13 @@ export function AssistantPanel() {
   }, []);
 
   const canSend = useMemo(() => input.trim().length > 0 && !loading, [input, loading]);
+  const agent = getAssistantAgent(activeAgent);
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => normalizeAssistantMode(message.mode) === activeAgent),
+    [activeAgent, messages],
+  );
 
-  async function sendMessage(content: string, mode: "default" | "prediction" = predictionMode ? "prediction" : "default") {
+  async function sendMessage(content: string, mode: AssistantMode = activeAgent) {
     const message = content.trim();
     if (!message || loading) {
       return;
@@ -103,6 +105,7 @@ export function AssistantPanel() {
         data?: {
           reply?: string;
           predictionCard?: AssistantMessage["prediction"];
+          workflow?: AssistantWorkflow;
         };
         error?: string;
       };
@@ -116,7 +119,7 @@ export function AssistantPanel() {
         throw new Error("Assistant returned an empty reply");
       }
 
-      setMessages((current) => [...current, { role: "assistant", mode, content: reply, prediction: data.data?.predictionCard ?? null }]);
+      setMessages((current) => [...current, { role: "assistant", mode, content: reply, prediction: data.data?.predictionCard ?? null, workflow: data.data?.workflow ?? null }]);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Assistant request failed");
     } finally {
@@ -127,12 +130,12 @@ export function AssistantPanel() {
   async function clearHistory() {
     try {
       setError(null);
-      const response = await fetch("/api/ai/history", { method: "DELETE" });
+      const response = await fetch(`/api/ai/history?mode=${activeAgent}`, { method: "DELETE" });
       if (!response.ok) {
         const payload = (await response.json()) as { error?: string };
         throw new Error(payload.error ?? "Unable to clear chat history");
       }
-      setMessages([]);
+      setMessages((current) => current.filter((message) => normalizeAssistantMode(message.mode) !== activeAgent));
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Unable to clear chat history");
     }
@@ -157,8 +160,8 @@ export function AssistantPanel() {
           <header className="flex items-center gap-2 border-b border-[color:var(--outline-variant)]/20 px-4 py-3">
             <Bot className="h-4 w-4 text-[color:var(--primary)]" />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold text-[color:var(--on-surface)]">Clutch AI</p>
-              <p className="text-[10px] text-[color:var(--on-surface-variant)]">Server-synced history, analytics Q&A, and predictions</p>
+              <p className="text-sm font-semibold text-[color:var(--on-surface)]">{agent.label}</p>
+              <p className="text-[10px] text-[color:var(--on-surface-variant)]">{agent.description}</p>
             </div>
             <button type="button" onClick={() => void clearHistory()} className="rounded p-1 text-[color:var(--on-surface-variant)]" aria-label="Clear chat history" title="Clear chat history">
               <Trash2 className="h-4 w-4" />
@@ -169,13 +172,27 @@ export function AssistantPanel() {
           </header>
 
           <div className="no-scrollbar flex-1 space-y-3 overflow-y-auto p-3">
-            {!messages.length ? (
+            <div className="flex flex-wrap gap-2">
+              {ASSISTANT_AGENTS.map((item) => (
+                <button
+                  key={item.mode}
+                  type="button"
+                  onClick={() => setActiveAgent(item.mode)}
+                  className={`rounded-full border px-2.5 py-1 text-[10px] ${activeAgent === item.mode ? "border-[color:var(--primary)]/55 bg-[color:var(--surface-high)] text-[color:var(--primary)]" : "border-[color:var(--outline-variant)]/25 text-[color:var(--on-surface-variant)]"}`}
+                  disabled={loading}
+                >
+                  {item.label} · {item.badge}
+                </button>
+              ))}
+            </div>
+
+            {!visibleMessages.length ? (
               <div className="panel-high p-3 text-xs text-[color:var(--on-surface-variant)]">
-                Ask about your live betting history. Examples: summarize bet notes, explain ROI segments, or generate risk-control insights.
+                {agent.emptyState}
               </div>
             ) : null}
 
-            {messages.map((message, index) => (
+            {visibleMessages.map((message, index) => (
               <div key={message.id ?? `${message.role}-${index}`} className="space-y-2">
                 <div
                   className={`rounded-xl px-3 py-2 text-sm whitespace-pre-wrap ${message.role === "assistant" ? "bg-[color:var(--surface-lowest)] text-[color:var(--on-surface)]" : "bg-[color:var(--surface-high)] text-[color:var(--primary)]"}`}
@@ -216,6 +233,16 @@ export function AssistantPanel() {
                     ) : null}
                   </div>
                 ) : null}
+                {message.role === "assistant" && message.workflow ? (
+                  <div className="panel-high space-y-2 rounded-xl p-3 text-xs text-[color:var(--on-surface-variant)]">
+                    <p className="font-semibold text-[color:var(--on-surface)]">Workflow Trace</p>
+                    <p>Route mode: {getAssistantAgent(message.workflow.routeMode).label}</p>
+                    <p>Primary agent: {getAssistantAgent(message.workflow.primaryAgent).label}</p>
+                    <p>Agents used: {message.workflow.agentsUsed.join(" -> ")}</p>
+                    <p>Why: {message.workflow.reasoning}</p>
+                    {message.workflow.branchesTaken.length ? <p>Branches: {message.workflow.branchesTaken.join(" | ")}</p> : <p>Branches: none triggered</p>}
+                  </div>
+                ) : null}
               </div>
             ))}
 
@@ -231,19 +258,11 @@ export function AssistantPanel() {
 
           <div className="border-t border-[color:var(--outline-variant)]/20 p-3">
             <div className="mb-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setPredictionMode((current) => !current)}
-                className={`rounded-full border px-2.5 py-1 text-[10px] ${predictionMode ? "border-[color:var(--primary)]/50 text-[color:var(--primary)]" : "border-[color:var(--outline-variant)]/25 text-[color:var(--on-surface-variant)]"}`}
-                disabled={loading}
-              >
-                Prediction Mode {predictionMode ? "On" : "Off"}
-              </button>
-              {quickPrompts.map((prompt) => (
+              {agent.quickPrompts.map((prompt) => (
                 <button
                   key={prompt}
                   type="button"
-                  onClick={() => void sendMessage(prompt, predictionMode ? "prediction" : "default")}
+                  onClick={() => void sendMessage(prompt, activeAgent)}
                   className="rounded-full border border-[color:var(--outline-variant)]/25 px-2.5 py-1 text-[10px] text-[color:var(--on-surface-variant)]"
                   disabled={loading}
                 >
@@ -261,7 +280,7 @@ export function AssistantPanel() {
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
-                placeholder="Ask about notes, trends, or insights..."
+                placeholder={agent.inputPlaceholder}
                 className="min-h-20 flex-1 resize-none rounded-xl border border-[color:var(--outline-variant)]/25 bg-[color:var(--surface-lowest)] px-3 py-2 text-sm outline-none"
               />
               <button type="submit" title="Send message" aria-label="Send message" className="btn-primary h-10 px-3" disabled={!canSend}>

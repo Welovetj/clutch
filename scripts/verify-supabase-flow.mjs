@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const testEmailDomain = (process.env.SUPABASE_TEST_EMAIL_DOMAIN ?? "mtroyal.ca").trim();
 
 if (!url || !anonKey) {
   console.error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local");
@@ -9,7 +10,7 @@ if (!url || !anonKey) {
 }
 
 const nonce = Date.now();
-const email = `clutch-flow-${nonce}@example.com`;
+const email = `clutch-flow-${nonce}@${testEmailDomain}`;
 const password = `Clutch!${nonce}`;
 const fullName = `Clutch Flow ${nonce}`;
 const ticketCode = `FLOW-${String(nonce).slice(-8)}`;

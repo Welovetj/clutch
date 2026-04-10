@@ -1,16 +1,25 @@
 import { NextResponse } from "next/server";
+import {
+  getAssistantAgent,
+  normalizeAssistantMode,
+  normalizeSpecialistAssistantMode,
+  type AssistantMode,
+  type AssistantWorkflow,
+  type SpecialistAssistantMode,
+} from "@/lib/ai/agents";
 import { buildAnalytics, buildExposure, buildKpis, mapBankrollRow, mapBetRow, mapWatchlistRow } from "@/lib/supabase/dashboard-data";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  mode?: AssistantMode;
 };
 
 type ChatRequest = {
   message?: string;
   history?: ChatMessage[];
-  mode?: "default" | "prediction";
+  mode?: AssistantMode;
 };
 
 type PredictionCard = {
@@ -21,6 +30,17 @@ type PredictionCard = {
   riskFlags: string[];
   recommendedStakePct: number;
   timeHorizon: string;
+};
+
+type RouterDecision = {
+  primaryMode: SpecialistAssistantMode;
+  reasoning: string;
+  needsRiskReview: boolean;
+};
+
+type AssistantApiMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
 };
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -93,7 +113,167 @@ function clampHistory(history: ChatMessage[] | undefined): ChatMessage[] {
   return history
     .filter((item): item is ChatMessage => (item?.role === "user" || item?.role === "assistant") && typeof item?.content === "string")
     .slice(-12)
-    .map((item) => ({ role: item.role, content: item.content.slice(0, 3000) }));
+    .map((item) => ({ role: item.role, mode: normalizeAssistantMode(item.mode), content: item.content.slice(0, 3000) }));
+}
+
+function computeMaxDrawdownPct(values: number[]): number {
+  if (!values.length) {
+    return 0;
+  }
+
+  let peak = values[0];
+  let maxDrawdown = 0;
+
+  for (const value of values) {
+    peak = Math.max(peak, value);
+    if (peak > 0) {
+      maxDrawdown = Math.max(maxDrawdown, ((peak - value) / peak) * 100);
+    }
+  }
+
+  return maxDrawdown;
+}
+
+function buildAgentPrompt(agentMode: SpecialistAssistantMode, contextPayload: string): string {
+  const agent = getAssistantAgent(agentMode);
+
+  return [
+    "You are CLUTCH AI, a sports betting assistant inside a live dashboard.",
+    `Active specialist agent: ${agent.label}.`,
+    `Agent brief: ${agent.description}`,
+    "You must only use the provided user data context and avoid hallucinating unseen bets or bankroll values.",
+    "Guidelines:",
+    "- Be concise and useful.",
+    "- Use bullets where appropriate.",
+    "- Include numeric evidence from context when giving insights.",
+    "- If data is missing, say what is missing and suggest what to track next.",
+    "- Never claim guaranteed outcomes or certainty.",
+    "- Keep language action-oriented and non-judgmental.",
+    ...agent.systemFocus.map((rule) => `- ${rule}`),
+    "Data context JSON follows:",
+    contextPayload,
+  ].join("\n");
+}
+
+async function requestOpenRouter(apiKey: string, messages: AssistantApiMessage[]) {
+  const response = await fetch(OPENROUTER_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://clutch.local",
+      "X-Title": "Clutch Dashboard Assistant",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      temperature: 0.35,
+      max_tokens: 900,
+      messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`OpenRouter request failed: ${text.slice(0, 300)}`);
+  }
+
+  const completion = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+
+  const content = completion.choices?.[0]?.message?.content?.trim();
+
+  if (!content) {
+    throw new Error("OpenRouter returned an empty response.");
+  }
+
+  return content;
+}
+
+function normalizeRouterDecision(value: unknown): RouterDecision | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const primaryMode = normalizeSpecialistAssistantMode(record.primaryMode);
+  const reasoning = typeof record.reasoning === "string" ? record.reasoning.trim() : "";
+  const needsRiskReview = typeof record.needsRiskReview === "boolean" ? record.needsRiskReview : false;
+
+  return {
+    primaryMode,
+    reasoning: reasoning || "Router selected the most relevant specialist from the request.",
+    needsRiskReview,
+  };
+}
+
+function keywordMatches(message: string, pattern: RegExp) {
+  return pattern.test(message.toLowerCase());
+}
+
+function fallbackRouterDecision(message: string): RouterDecision {
+  if (keywordMatches(message, /(predict|pick|best bet|edge|confidence|stake)/i)) {
+    return { primaryMode: "prediction", reasoning: "Prediction language detected in the request.", needsRiskReview: true };
+  }
+
+  if (keywordMatches(message, /(bankroll|stake|sizing|drawdown|tilt|risk|exposure)/i)) {
+    return { primaryMode: "bankroll", reasoning: "Risk or bankroll management language detected in the request.", needsRiskReview: false };
+  }
+
+  if (keywordMatches(message, /(recap|summary|postmortem|review|week|daily|weekly|last)/i)) {
+    return { primaryMode: "recap", reasoning: "Recap-style language detected in the request.", needsRiskReview: false };
+  }
+
+  if (keywordMatches(message, /(watchlist|team|teams|track|scout|monitor)/i)) {
+    return { primaryMode: "watchlist", reasoning: "Watchlist or scouting language detected in the request.", needsRiskReview: false };
+  }
+
+  return { primaryMode: "default", reasoning: "No specialist intent dominated, so the workflow kept the general analyst.", needsRiskReview: false };
+}
+
+async function routeAutoWorkflow(apiKey: string, message: string, summary: string): Promise<RouterDecision> {
+  const routerPrompt = [
+    "You are the CLUTCH workflow router.",
+    "Choose the best specialist agent for the user request.",
+    "Allowed primaryMode values: default, prediction, bankroll, recap, watchlist.",
+    "Return ONLY JSON with keys: primaryMode, reasoning, needsRiskReview.",
+    "Set needsRiskReview true when the request involves prediction, aggressive staking, concentrated exposure, tilt, or bankroll danger.",
+    "Do not answer the user question directly.",
+    "Data summary follows:",
+    summary,
+  ].join("\n");
+
+  try {
+    const content = await requestOpenRouter(apiKey, [
+      { role: "system", content: routerPrompt },
+      { role: "user", content: message },
+    ]);
+
+    return normalizeRouterDecision(extractJsonObject(content)) ?? fallbackRouterDecision(message);
+  } catch {
+    return fallbackRouterDecision(message);
+  }
+}
+
+async function runSpecialistAgent(
+  apiKey: string,
+  agentMode: SpecialistAssistantMode,
+  systemPrompt: string,
+  history: ChatMessage[],
+  message: string,
+) {
+  const conversation: AssistantApiMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...history.map((item) => ({ role: item.role, content: item.content })),
+    { role: "user", content: message },
+  ];
+
+  if (agentMode === "prediction") {
+    conversation[0].content +=
+      "\nPrediction mode is active. Return ONLY valid JSON with keys: title, pick, confidence (0-100), rationale (string[]), riskFlags (string[]), recommendedStakePct (0-100), timeHorizon.";
+  }
+
+  return requestOpenRouter(apiKey, conversation);
 }
 
 export async function POST(request: Request) {
@@ -119,7 +299,7 @@ export async function POST(request: Request) {
 
   const body = (await request.json()) as ChatRequest;
   const message = String(body.message ?? "").trim();
-  const mode = body.mode === "prediction" ? "prediction" : "default";
+  const mode = normalizeAssistantMode(body.mode);
 
   if (!message) {
     return NextResponse.json({ error: "Message is required." }, { status: 400 });
@@ -156,6 +336,11 @@ export async function POST(request: Request) {
   const kpis = buildKpis(bets);
   const exposure = buildExposure(bets);
   const segments = buildAnalytics(bets);
+  const currentBankroll = bankroll[bankroll.length - 1]?.value ?? null;
+  const totalOpenStake = exposure.reduce((sum, item) => sum + item.openStake, 0);
+  const topExposureShare = exposure[0]?.share ?? 0;
+  const settledBets = bets.filter((bet) => bet.status !== "pending").length;
+  const maxDrawdownPct = computeMaxDrawdownPct(bankroll.map((item) => item.value));
 
   const contextPayload = {
     user: {
@@ -165,10 +350,13 @@ export async function POST(request: Request) {
     },
     summary: {
       totalBets: bets.length,
-      settledBets: bets.filter((bet) => bet.status !== "pending").length,
+      settledBets,
       pendingBets: bets.filter((bet) => bet.status === "pending").length,
-      currentBankroll: bankroll[bankroll.length - 1]?.value ?? null,
+      currentBankroll,
       watchlistCount: watchlist.length,
+      topExposureShare,
+      totalOpenStake,
+      maxDrawdownPct,
     },
     kpis,
     exposure,
@@ -178,25 +366,21 @@ export async function POST(request: Request) {
     watchlist,
   };
 
-  const systemPrompt = [
-    "You are CLUTCH AI, a sports betting assistant inside a live dashboard.",
-    "You must only use the provided user data context and avoid hallucinating unseen bets or bankroll values.",
-    "Capabilities expected: bet note summarization, natural-language analytics answers, AI-generated insights over betting history, and practical next-step suggestions.",
-    "Guidelines:",
-    "- Be concise and useful.",
-    "- Use bullets where appropriate.",
-    "- Include numeric evidence from context when giving insights.",
-    "- If data is missing, say what is missing and suggest what to track next.",
-    "- Never claim guaranteed outcomes or certainty.",
-    "- Keep language action-oriented and non-judgmental.",
-    "Data context JSON follows:",
-    JSON.stringify(contextPayload),
-  ].join("\n");
+  const contextJson = JSON.stringify(contextPayload);
+  const routingSummary = JSON.stringify({
+    message,
+    summary: contextPayload.summary,
+    topKpis: kpis,
+    topExposure: exposure.slice(0, 3),
+    topSegments: segments.slice(0, 5),
+    watchlistPreview: watchlist.slice(0, 5),
+  });
 
   const serverHistoryResponse = await supabase
     .from("ai_chat_messages")
     .select("role,content")
     .eq("user_id", user.id)
+    .eq("mode", mode)
     .order("created_at", { ascending: true })
     .limit(12);
 
@@ -207,52 +391,80 @@ export async function POST(request: Request) {
           (item.role === "user" || item.role === "assistant") && typeof item.content === "string",
       );
 
-  const conversation = [
-    { role: "system", content: systemPrompt },
-    ...(serverHistory.length ? serverHistory : clampHistory(body.history)),
-    { role: "user", content: message },
-  ];
+  const localHistory = clampHistory(body.history).filter((item) => normalizeAssistantMode(item.mode) === mode);
+  const historyForMode = serverHistory.length ? serverHistory : localHistory;
 
-  if (mode === "prediction") {
-    conversation[0].content +=
-      "\nPrediction mode is active. Return ONLY valid JSON with keys: title, pick, confidence (0-100), rationale (string[]), riskFlags (string[]), recommendedStakePct (0-100), timeHorizon.";
+  let primaryMode: SpecialistAssistantMode = mode === "auto" ? "default" : normalizeSpecialistAssistantMode(mode);
+  let workflowReasoning = "Manual specialist selection.";
+  const agentsUsed = [mode === "auto" ? "Auto Router" : getAssistantAgent(primaryMode).label];
+  const branchesTaken: string[] = [];
+
+  if (mode === "auto") {
+    const routerDecision = await routeAutoWorkflow(apiKey, message, routingSummary);
+    primaryMode = routerDecision.primaryMode;
+    workflowReasoning = routerDecision.reasoning;
+    agentsUsed.push(getAssistantAgent(primaryMode).label);
+
+    if (routerDecision.needsRiskReview) {
+      branchesTaken.push("Router flagged this request for bankroll risk review.");
+    }
   }
 
-  const response = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://clutch.local",
-      "X-Title": "Clutch Dashboard Assistant",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      temperature: 0.35,
-      max_tokens: 900,
-      messages: conversation,
-    }),
-  });
+  const requestedPrediction = primaryMode === "prediction";
+  const riskRequested = keywordMatches(message, /(bankroll|stake|sizing|risk|tilt|drawdown|exposure)/i);
+  const highRiskProfile = topExposureShare >= 0.45 || (currentBankroll !== null && currentBankroll > 0 && totalOpenStake / currentBankroll >= 0.12) || maxDrawdownPct >= 12;
 
-  if (!response.ok) {
-    const text = await response.text();
-    return NextResponse.json({ error: `OpenRouter request failed: ${text.slice(0, 300)}` }, { status: 502 });
+  if (primaryMode === "watchlist" && watchlist.length === 0) {
+    primaryMode = "default";
+    branchesTaken.push("Watchlist branch fell back to General Analyst because no watchlist teams are stored yet.");
   }
 
-  const completion = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
+  if (primaryMode === "recap" && settledBets < 5) {
+    primaryMode = "default";
+    branchesTaken.push("Recap branch fell back to General Analyst because there are fewer than 5 settled bets.");
+  }
 
-  const content = completion.choices?.[0]?.message?.content?.trim();
+  const shouldRunRiskReview = primaryMode !== "bankroll" && (requestedPrediction || riskRequested || highRiskProfile);
+  if (shouldRunRiskReview) {
+    branchesTaken.push("Risk review branch ran through Bankroll Coach because the request or portfolio profile triggered bankroll safeguards.");
+  }
 
-  if (!content) {
-    return NextResponse.json({ error: "OpenRouter returned an empty response." }, { status: 502 });
+  let content: string;
+
+  try {
+    const primaryPrompt = buildAgentPrompt(primaryMode, contextJson);
+    const primaryContent = await runSpecialistAgent(apiKey, primaryMode, primaryPrompt, historyForMode, message);
+
+    if (shouldRunRiskReview) {
+      agentsUsed.push(getAssistantAgent("bankroll").label);
+      const riskPrompt = buildAgentPrompt("bankroll", contextJson);
+      const riskContent = await runSpecialistAgent(
+        apiKey,
+        "bankroll",
+        `${riskPrompt}\nYou are reviewing another specialist draft. Focus only on bankroll guardrails, exposure warnings, stake discipline, and downside control.`,
+        [],
+        `Original user request:\n${message}\n\nPrimary specialist draft:\n${primaryContent}`,
+      );
+      content = `${primaryContent}\n\nBankroll Coach Review\n${riskContent}`;
+    } else {
+      content = primaryContent;
+    }
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : "Assistant request failed.";
+    return NextResponse.json({ error: messageText }, { status: 502 });
   }
 
   let reply = content;
   let predictionCard: PredictionCard | null = null;
+  const workflow: AssistantWorkflow = {
+    routeMode: mode,
+    primaryAgent: primaryMode,
+    agentsUsed,
+    branchesTaken,
+    reasoning: workflowReasoning,
+  };
 
-  if (mode === "prediction") {
+  if (primaryMode === "prediction") {
     predictionCard = normalizePredictionCard(extractJsonObject(content));
 
     if (predictionCard) {
@@ -263,6 +475,10 @@ export async function POST(request: Request) {
         `Stake: ${predictionCard.recommendedStakePct.toFixed(1)}% bankroll`,
         `Horizon: ${predictionCard.timeHorizon}`,
       ].join("\n");
+
+      if (branchesTaken.length) {
+        reply += `\n\nWorkflow Notes\n- ${branchesTaken.join("\n- ")}`;
+      }
     }
   }
 
@@ -279,8 +495,9 @@ export async function POST(request: Request) {
       mode,
       content: reply,
       prediction: predictionCard,
+      workflow,
     },
   ]);
 
-  return NextResponse.json({ data: { reply, predictionCard } });
+  return NextResponse.json({ data: { reply, predictionCard, workflow } });
 }

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isAssistantMode } from "@/lib/ai/agents";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function GET() {
@@ -18,7 +19,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("ai_chat_messages")
-    .select("id,role,mode,content,prediction,created_at")
+    .select("id,role,mode,content,prediction,workflow,created_at")
     .eq("user_id", user.id)
     .order("created_at", { ascending: true })
     .limit(80);
@@ -30,7 +31,7 @@ export async function GET() {
   return NextResponse.json({ data: data ?? [] });
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
   const supabase = await createSupabaseServerClient();
 
   if (!supabase) {
@@ -45,7 +46,15 @@ export async function DELETE() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { error } = await supabase.from("ai_chat_messages").delete().eq("user_id", user.id);
+  const { searchParams } = new URL(request.url);
+  const mode = searchParams.get("mode");
+  let query = supabase.from("ai_chat_messages").delete().eq("user_id", user.id);
+
+  if (mode && isAssistantMode(mode)) {
+    query = query.eq("mode", mode);
+  }
+
+  const { error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

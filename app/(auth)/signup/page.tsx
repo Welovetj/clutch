@@ -4,6 +4,7 @@ import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { toSupabaseErrorMessage } from "@/lib/supabase/errors";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -75,7 +76,7 @@ export default function SignupPage() {
       router.replace("/dashboard");
       router.refresh();
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : "Sign up failed");
+      setError(toSupabaseErrorMessage(caughtError, "Sign up failed"));
     } finally {
       setPending(false);
     }

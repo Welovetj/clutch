@@ -38,7 +38,7 @@ Premium sports betting tracker built with Next.js App Router, TypeScript, and Ta
 	- bet note summarization
 	- natural-language analytics queries
 	- insights over live betting history
-	- persistent chat history in browser storage
+	- a visible multi-agent workflow with Auto Router, General Analyst, Prediction Lab, Bankroll Coach, Recap Writer, and Watchlist Scout
 
 ## Supabase Setup
 
@@ -69,4 +69,13 @@ The assistant runs at `POST /api/ai/chat` and is available from the floating pan
 
 Cross-device chat history is persisted in `public.ai_chat_messages` (created by `supabase/schema.sql`) and exposed by `GET/DELETE /api/ai/history`.
 
-Prediction mode returns a structured prediction card with confidence, rationale, risk flags, recommended stake %, and time horizon.
+Prediction Lab returns a structured prediction card with confidence, rationale, risk flags, recommended stake %, and time horizon.
+
+The Bankroll Coach focuses on exposure and stake sizing, the Recap Writer produces concise performance summaries, and the Watchlist Scout reviews tracked teams and segment trends. Each agent now keeps its own chat thread using the `mode` field in `public.ai_chat_messages`.
+
+The Auto Workflow mode adds explicit orchestration:
+
+- Router agent chooses the primary specialist from the user's message and data summary.
+- Conditional branch 1: watchlist or recap requests fall back to General Analyst when the required data is insufficient.
+- Conditional branch 2: prediction or risky portfolio situations trigger a Bankroll Coach review branch.
+- The UI now shows a workflow trace so the agent path is visible during demos and grading.

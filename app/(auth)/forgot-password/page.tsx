@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { toSupabaseErrorMessage } from "@/lib/supabase/errors";
 
 export default function ForgotPasswordPage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
@@ -47,7 +48,7 @@ export default function ForgotPasswordPage() {
 
       setMessage("If an account exists for that email, a reset link has been sent.");
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : "Unable to send reset link");
+      setError(toSupabaseErrorMessage(caughtError, "Unable to send reset link"));
     } finally {
       setPending(false);
     }
