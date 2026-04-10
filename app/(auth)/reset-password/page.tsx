@@ -39,8 +39,8 @@ export default function ResetPasswordPage() {
   }, []);
 
   useEffect(() => {
-    const supabase = createSupabaseBrowserClientSafe();
-    if (!supabase) {
+    const client = createSupabaseBrowserClientSafe();
+    if (!client) {
       return;
     }
 
@@ -49,7 +49,7 @@ export default function ResetPasswordPage() {
     async function checkSession() {
       const {
         data: { session },
-      } = await supabase.auth.getSession();
+      } = await client!.auth.getSession();
 
       if (!mounted) {
         return;
@@ -68,7 +68,7 @@ export default function ResetPasswordPage() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
+    } = client!.auth.onAuthStateChange((event, session) => {
       if ((event === "PASSWORD_RECOVERY" || event === "SIGNED_IN") && session) {
         setCanReset(true);
         setError(null);
