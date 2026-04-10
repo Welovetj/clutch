@@ -1,14 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { createSupabaseBrowserClientSafe } from "@/lib/supabase/client";
 import { toSupabaseErrorMessage } from "@/lib/supabase/errors";
 
 export default function ResetPasswordPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+  const [supabaseReady, setSupabaseReady] = useState(false);
 
   const [pending, setPending] = useState(false);
   const [resendPending, setResendPending] = useState(false);
@@ -17,6 +17,11 @@ export default function ResetPasswordPage() {
   const [resendMessage, setResendMessage] = useState<string | null>(null);
   const [canReset, setCanReset] = useState(false);
   const [recoveryEmail, setRecoveryEmail] = useState("");
+
+  useEffect(() => {
+    const client = createSupabaseBrowserClientSafe();
+    setSupabaseReady(Boolean(client));
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -34,6 +39,11 @@ export default function ResetPasswordPage() {
   }, []);
 
   useEffect(() => {
+    const supabase = createSupabaseBrowserClientSafe();
+    if (!supabase) {
+      return;
+    }
+
     let mounted = true;
 
     async function checkSession() {
@@ -71,7 +81,7 @@ export default function ResetPasswordPage() {
       mounted = false;
       subscription.unsubscribe();
     };
-  }, [supabase]);
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -80,6 +90,11 @@ export default function ResetPasswordPage() {
     setMessage(null);
 
     try {
+      const supabase = createSupabaseBrowserClientSafe();
+      if (!supabase) {
+        throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      }
+
       if (!canReset) {
         throw new Error("Open this page from the password reset email link.");
       }
@@ -119,6 +134,11 @@ export default function ResetPasswordPage() {
     setError(null);
 
     try {
+      const supabase = createSupabaseBrowserClientSafe();
+      if (!supabase) {
+        throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      }
+
       const email = recoveryEmail.trim();
 
       if (!email) {
@@ -172,7 +192,7 @@ export default function ResetPasswordPage() {
             </label>
             {error && <p className="text-xs text-[color:var(--error)]">{error}</p>}
             {message && <p className="text-xs text-[color:var(--primary)]">{message}</p>}
-            <button type="submit" className="btn-primary w-full" disabled={pending}>
+            <button type="submit" className="btn-primary w-full" disabled={pending || !supabaseReady}>
               {pending ? "Updating password..." : "Update Password"}
             </button>
           </form>
@@ -191,7 +211,7 @@ export default function ResetPasswordPage() {
             </label>
             {error && <p className="text-xs text-[color:var(--error)]">{error}</p>}
             {resendMessage && <p className="text-xs text-[color:var(--primary)]">{resendMessage}</p>}
-            <button type="submit" className="btn-primary w-full" disabled={resendPending}>
+            <button type="submit" className="btn-primary w-full" disabled={resendPending || !supabaseReady}>
               {resendPending ? "Sending link..." : "Resend Reset Link"}
             </button>
           </form>

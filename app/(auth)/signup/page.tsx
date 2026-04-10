@@ -1,22 +1,32 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { createSupabaseBrowserClientSafe } from "@/lib/supabase/client";
 import { toSupabaseErrorMessage } from "@/lib/supabase/errors";
 
 export default function SignupPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+  const [supabaseReady, setSupabaseReady] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    const client = createSupabaseBrowserClientSafe();
+    setSupabaseReady(Boolean(client));
+  }, []);
+
+  useEffect(() => {
     let mounted = true;
 
     async function checkSession() {
+      const supabase = createSupabaseBrowserClientSafe();
+      if (!supabase) {
+        return;
+      }
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -32,7 +42,7 @@ export default function SignupPage() {
     return () => {
       mounted = false;
     };
-  }, [router, supabase]);
+  }, [router]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -41,6 +51,11 @@ export default function SignupPage() {
     setMessage(null);
 
     try {
+      const supabase = createSupabaseBrowserClientSafe();
+      if (!supabase) {
+        throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      }
+
       const formData = new FormData(event.currentTarget);
       const fullName = String(formData.get("fullName") ?? "").trim();
       const email = String(formData.get("email") ?? "").trim();
@@ -121,7 +136,7 @@ export default function SignupPage() {
           </label>
           {error && <p className="text-xs text-[color:var(--error)]">{error}</p>}
           {message && <p className="text-xs text-[color:var(--primary)]">{message}</p>}
-          <button type="submit" className="btn-primary w-full" disabled={pending}>
+          <button type="submit" className="btn-primary w-full" disabled={pending || !supabaseReady}>
             {pending ? "Creating account..." : "Create Account"}
           </button>
           <p className="text-center text-xs text-[color:var(--on-surface-variant)]">

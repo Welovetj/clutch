@@ -1,16 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { FormEvent, useEffect, useState } from "react";
+import { createSupabaseBrowserClientSafe } from "@/lib/supabase/client";
 import { toSupabaseErrorMessage } from "@/lib/supabase/errors";
 
 export default function ForgotPasswordPage() {
-  const supabase = useMemo(() => createSupabaseBrowserClient(), []);
+  const [supabaseReady, setSupabaseReady] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [emailValue, setEmailValue] = useState("");
+
+  useEffect(() => {
+    const client = createSupabaseBrowserClientSafe();
+    setSupabaseReady(Boolean(client));
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -35,8 +40,18 @@ export default function ForgotPasswordPage() {
     try {
       const email = emailValue.trim();
 
+      if (!supabaseReady) {
+        throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+      }
+
       if (!email) {
         throw new Error("Please enter your email.");
+      }
+
+      const supabase = createSupabaseBrowserClientSafe();
+
+      if (!supabase) {
+        throw new Error("Supabase is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.");
       }
 
       const redirectTo = `${window.location.origin}/reset-password`;
@@ -76,7 +91,7 @@ export default function ForgotPasswordPage() {
           </label>
           {error && <p className="text-xs text-[color:var(--error)]">{error}</p>}
           {message && <p className="text-xs text-[color:var(--primary)]">{message}</p>}
-          <button type="submit" className="btn-primary w-full" disabled={pending}>
+          <button type="submit" className="btn-primary w-full" disabled={pending || !supabaseReady}>
             {pending ? "Sending link..." : "Send Reset Link"}
           </button>
           <p className="text-center text-xs text-[color:var(--on-surface-variant)]">
